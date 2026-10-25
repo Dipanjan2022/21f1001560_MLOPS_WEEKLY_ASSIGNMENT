@@ -1,31 +1,142 @@
-# IITM MLOps Week 1 Assignment
+# Integrating Feast Feature Store into the IRIS Pipeline
 
-## Objective
-Build a machine learning training and inference workflow using the Iris dataset, Google Cloud Storage (GCS), and Vertex AI Workbench.
+## Overview
 
-## Dataset
-- `train.csv`: training data
-- `eval.csv`: evaluation data
-- Target column: `species`
-- Input features: sepal length, sepal width, petal length, and petal width
+This project integrates [Feast](https://feast.dev/) into the existing IRIS machine-learning pipeline. Feast provides a shared feature definition and retrieval layer for model training and inference, helping reduce training-serving skew.
 
-## Training workflow
-The `train.py` script downloads the datasets from GCS, standardizes the features using `StandardScaler`, trains a `LogisticRegression` classifier, evaluates its performance, and uploads the trained model and metadata.
+The implementation uses:
+- **Offline feature source:** Parquet
+- **Online store:** SQLite
+- **Entity:** `iris_sample`, identified by `sample_id`
+- **Feature view:** `iris_features`
+- **Model:** `StandardScaler` followed by `LogisticRegression`
 
-## Inference workflow
-The `infer.py` script downloads the saved model, generates predictions on the evaluation dataset, calculates evaluation metrics, and uploads predictions and inference metrics to GCS.
+The existing Week 2 DVC pipeline is preserved. Feast-specific scripts and files are added separately.
 
-## Experiment tracking
-Two runs were executed with separate run IDs:
-- `20261010T143000Z`
-- `20261010T150000Z`
+## Repository layout
 
-Each run stores its model, training metrics, run metadata, predictions, and inference metrics in its own GCS artifact folder.
+```text
+.
+├── feature_repo/
+│   ├── data/
+│   │   ├── .gitignore
+│   │   ├── iris_features.parquet
+│   │   └── iris_labels.csv
+│   ├── definitions.py
+│   ├── feature_store.yaml
+│   └── prepare_data.py
+├── train_feast.py
+├── infer_feast.py
+└── README.md
+```
 
-## Technologies
-- Python
-- pandas
-- scikit-learn
-- joblib
-- Google Cloud Storage
-- Vertex AI Workbench
+The SQLite registry and online-store database are generated locally when Feast commands run. They are excluded from Git by `feature_repo/data/.gitignore`.
+
+## Prerequisites
+
+- Python and the project's virtual environment
+- Feast
+- pandas, PyArrow, scikit-learn, and joblib
+
+The implementation was tested with Feast `0.67.0` in a Python 3.12 environment.
+
+Activate the existing virtual environment from the repository root:
+
+```bash
+source .venv/bin/activate
+```
+
+If setting up a fresh environment, install the dependencies:
+
+```bash
+pip install feast==0.67.0 pyarrow pandas scikit-learn joblib
+```
+
+## Pipeline
+
+1. **Prepare features:** `feature_repo/prepare_data.py` prepares a Parquet feature source and a CSV label file, adding a unique `sample_id` and `event_timestamp`.
+2. **Register definitions:** Feast reads `feature_repo/feature_store.yaml` and `feature_repo/definitions.py`.
+3. **Materialize:** Feature values are copied from the offline source into the SQLite online store.
+4. **Train:** `train_feast.py` retrieves historical features through `get_historical_features()` and trains the classifier.
+5. **Infer:** `infer_feast.py` retrieves features through `get_online_features()` and compares the resulting predictions with predictions using the corresponding raw feature values.
+
+## How to run
+
+Run commands from the repository root unless noted otherwise.
+
+### 1. Prepare feature data
+
+```bash
+python feature_repo/prepare_data.py
+```
+
+This creates:
+- `feature_repo/data/iris_features.parquet`
+- `feature_repo/data/iris_labels.csv`
+
+### 2. Register the feature definitions
+
+```bash
+cd feature_repo
+feast apply
+```
+
+### 3. Materialize features into the online store
+
+Run from `feature_repo/`:
+
+```bash
+feast materialize 2025-01-01T00:00:00 2026-01-01T00:00:00
+```
+
+Then return to the project root:
+
+```bash
+cd ..
+```
+
+### 4. Train the model
+
+```bash
+python train_feast.py
+```
+
+The training script retrieves historical features from Feast, trains the model, evaluates it, and saves the model at:
+
+```text
+artifacts/feast_model.joblib
+```
+
+### 5. Run online inference
+
+```bash
+python infer_feast.py
+```
+
+The inference script reads online features from Feast and compares predictions with predictions made using the corresponding feature values from the prepared Parquet data.
+
+## Results
+
+Observed during testing:
+
+- Training rows: **180**
+- Evaluation rows: **30**
+- Evaluation accuracy: **0.9667 (96.67%)**
+- For the two samples tested by `infer_feast.py`, online-feature predictions matched raw-feature predictions.
+- The two tested predictions also matched the recorded labels.
+
+These checks demonstrate the expected flow for the tested data. They do not establish that every possible sample or transformation is free of training-serving skew.
+
+## Key concepts demonstrated
+
+- **Entity:** identifies the object described by features; here, each IRIS sample is identified by `sample_id`.
+- **Feature view:** defines the four numerical IRIS features and associates them with the entity and source.
+- **Offline retrieval:** `get_historical_features()` retrieves historical features for training.
+- **Materialization:** loads feature values into the online store.
+- **Online retrieval:** `get_online_features()` retrieves features for inference.
+
+## Notes
+
+- The online store and registry are local SQLite databases and are generated during execution.
+- The model artifact is generated by `train_feast.py`; it does not need to be committed if the submission is expected to contain reproducible source code rather than a pre-trained binary.
+- The assignment's mandatory video, **“Understanding Feast in Production Environments,”** was watched before completing the implementation.
